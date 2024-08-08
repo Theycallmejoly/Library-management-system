@@ -1,37 +1,61 @@
-from rest_framework import viewsets, status
+from rest_framework import generics, permissions
 from rest_framework.response import Response
-from rest_framework.decorators import action
+from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import authenticate
+from django.utils import timezone
 from .models import Book, Borrow
-from .serializers import BookSerializer, BorrowSerializer
-from rest_framework.permissions import IsAuthenticated
+from .serializers import UserSerializer, BookSerializer, BorrowSerializer
 
 
-class  BookViewSet(viewsets.ModelViewSet):
-    queryset = Book.objects.all() 
+
+
+class SignupView(generics.CreateAPIView):
+    serializer_class = UserSerializer
+
+class LoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        user = authenticate(username=username, password=password)
+        if user:
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            })
+        return Response({'error': 'Invalid Credentials'}, status=400)
+
+class BookViewSet(generics.ListAPIView):
+    queryset = Book.objects.all()
     serializer_class = BookSerializer
-    permission_classes = [IsAuthenticated]
-    
+    permission_classes = [permissions.IsAuthenticated]
 
-    @action(detail=True, methods=['post'])
-    def borrow (self , request , pk = None):
-        book = self.get_object()
-        if not book.available:
-            return Response({'status' : 'Book not available'} , status = status.HTTP_400_BAD_REQUEST)
-        borrow = borrow.object.create(book = book , user = request.user)
-        book.available = False
-        book.save()
-        return Response({'status' : 'Book Borrowed'} , status = status.HTTP_200_OK)
-    
+class BorrowBookView(generics.CreateAPIView):
+    serializer_class = BorrowSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
-    @action(detail=True, methods=['post'])
-    def retrunBook(self , Request , pk = None):
-        book = self.get_object()
+    def perform_create(self, serializer):
+        book = serializer.validated_data['book']
+        if book.available:
+            book.available = False
+            book.save()
+            serializer.save(user=self.request.user)
+        else:
+            serializer.ValidationError("This book is already borrowed.")
+
+class ReturnBookView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
         try:
-            borrow = Borrow.objects.get(book = book , user = Request.user , return_date__isnull = True)
+            borrow = Borrow.objects.get(pk=pk, user=request.user)
+            borrow.returned_at = timezone.now()
+            borrow.book.available = True
+            borrow.book.save()
+            borrow.save()
+            return Response({'status': 'Book returned'})
         except Borrow.DoesNotExist:
-            return Response({'stauts' : 'Borrow record not found'}, status = status.HTTP_400_BAD_REQUEST)
-        borrow.return_date = models.DateField(auto_now_add=True)
-        borrow.save()
-        book.available = True
-        book.save()
-        return Response({'status' : 'Book returned'} , status = status.HTTP_200_OK)
+            return Response({'error': 'Borrow record not found'}, status=404)
